@@ -140,3 +140,51 @@ class ExtractDOGHN(object):
         kpt = np.concatenate([kpt,score],axis=-1)
         #print(kpt.shape)
         return kpt,desc
+
+
+class ExtractALIKED(object):
+    def __init__(self,config):
+        self.num_kp=config['num_kpt']
+        self.resize=config['resize']
+        self.det_th= config['det_th']
+        import sys
+        ROOT_DIR = os.path.abspath("/data1/ACuO/ALIKED-main")
+        sys.path.insert(0, ROOT_DIR)
+        from nets.aliked import ALIKED
+        self.model = ALIKED(model_name="aliked-n16rot",
+                            device='cuda',
+                            top_k=-1,
+                            scores_th=0.05,
+                            n_limit=5000)
+        self.model = self.model.cuda()
+        self.model.eval()
+        #self.superpoint = SuperPoint(config.get('superpoint', {}))
+
+    def feature_extract(self,img,num_kp):
+        # one should modify the alikes run() interface:
+        # input: tensor
+        # output: tensor
+        pred = self.model.run(img)
+        scores = pred['scores']
+        kpts = pred['keypoints']
+        descs = pred['descriptors']
+        if len(scores)>num_kp:
+            vals,idxs = scores.topk(num_kp)
+            kpts = kpts[idxs]
+            descs = descs[idxs]
+        else:
+           vals = scores
+        return {'keypoints': kpts.cpu().numpy(),'descriptors':descs.cpu().numpy(),'scores':vals.cpu().numpy()}
+
+    def run(self,img_path):
+        img = cv2.imread(img_path)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        scale=[1,1]
+        if self.resize[0]!=-1:
+            img,scale=resize(img,self.resize)
+        dict = self.feature_extract(img,self.num_kp)
+        kpt,desc,score = dict['keypoints'],dict['descriptors'],np.expand_dims(dict['scores'],axis=-1)
+        scale = np.expand_dims(np.flip(scale),0)
+        kpt = kpt/scale
+        kpt = np.concatenate([kpt,score],axis=-1)
+        return kpt,desc
