@@ -188,3 +188,108 @@ class ExtractALIKED(object):
         kpt = kpt/scale
         kpt = np.concatenate([kpt,score],axis=-1)
         return kpt,desc
+    
+class ExtractDISK(object):
+    def __init__(self,config):
+        self.num_kp=config['num_kpt']
+        self.resize=config['resize']
+        # self.det_th= config['det_th']
+        import sys
+        sys.path.insert(0, "/data1/ACuO/features/disk")
+        from functools import partial
+        from disk import DISK, Features
+        state_dict = torch.load('/data1/ACuO/features/disk/depth-save.pth', map_location='cpu')
+        
+        # compatibility with older model saves which used the 'extractor' name
+        if 'extractor' in state_dict:
+            weights = state_dict['extractor']
+        elif 'disk' in state_dict:
+            weights = state_dict['disk']
+        else:
+            raise KeyError('Incompatible weight file!')
+        model = DISK(window=8, desc_dim=128)
+        model.load_state_dict(weights)
+        model = model.cuda(
+        )
+        model.eval()
+        self.extract = partial(
+            model.features,
+            kind='nms',
+            window_size=5,
+            cutoff=0.,
+            n=4096
+        )
+
+        #self.superpoint = SuperPoint(config.get('superpoint', {}))
+
+    def feature_extract(self,img,num_kp):
+        img = (torch.from_numpy(img)/255.0).permute(2,0,1).unsqueeze(0).cuda()
+        #print(img.shape)
+        pred = self.extract(img).flat[0]
+        keypoints   = pred.kp.cpu().numpy()
+        descriptors = pred.desc.cpu().numpy()
+        scores      = pred.kp_logp.cpu().numpy()
+        order = np.argsort(scores)[::-1]
+
+        keypoints   = keypoints[order][0:num_kp]
+        descriptors = descriptors[order][0:num_kp]
+        scores      = scores[order][0:num_kp]
+        return {'keypoints': keypoints,'descriptors':descriptors,'scores':scores}
+    
+    def run(self,img_path):
+        img = cv2.imread(img_path)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        scale=[1,1]
+
+        img,scale=resize16(img,self.resize)
+        with torch.no_grad():
+            dict = self.feature_extract(img,self.num_kp)
+        kpt,desc,score = dict['keypoints'],dict['descriptors'],np.expand_dims(dict['scores'],axis=-1)
+        scale = np.expand_dims(np.flip(scale),0)
+        kpt = kpt/scale
+        kpt = np.concatenate([kpt,score],axis=-1)
+        #print(kpt.shape)
+        return kpt,desc
+    
+
+
+
+class ExtractAWDesc(object):
+    #########################
+    # detection threshold is set to 0.01 in the configuration file AWDesc_eva.yaml
+    ########################
+    def __init__(self,config):
+        self.num_kp=config['num_kpt']
+        self.resize=config['resize']
+        # self.det_th= config['det_th']
+        import sys
+        ROOT_DIR = os.path.abspath("/data1/ACuO/features/AWDesc-main/evaluation_hpatch")
+        sys.path.insert(0, ROOT_DIR)
+        import yaml
+        from models import get_model
+        with open("/data1/ACuO/features/AWDesc-main/scannet_test/AWDesc_eva.yaml", 'r') as f:
+            model_config = yaml.load(f,Loader=yaml.FullLoader)
+        self.model = get_model(model_config['model']['name'])(**model_config['model'])
+
+    def feature_extract(self,img,num_kp):
+        pred = self.model.predict(img)
+        scores = pred['scores']
+        kpts = pred['keypoints']
+        descs = pred['descriptors']
+        #print(descs.shape)
+        return {'keypoints': kpts[0:num_kp],'descriptors':descs[0:num_kp],'scores':scores[0:num_kp]}
+    
+    def run(self,img_path):
+        img = cv2.imread(img_path)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        scale=[1,1]
+        if self.resize[0]!=-1:
+            img,scale=resize(img,self.resize)
+        with torch.no_grad():
+            dict = self.feature_extract(img,self.num_kp)
+        kpt,desc,score = dict['keypoints'],dict['descriptors'],np.expand_dims(dict['scores'],axis=-1)
+        scale = np.expand_dims(np.flip(scale),0)
+        kpt = kpt/scale
+        kpt = np.concatenate([kpt,score],axis=-1)
+        #print(kpt.shape)
+        return kpt,desc
